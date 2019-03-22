@@ -40,9 +40,6 @@ func (pfRing) create(device string) (*gopacket.PacketSource, error) {
 	if err = ring.SetSocketMode(pfring.ReadOnly); err != nil {
 		return nil, err
 	}
-	if err = ring.SetDirection(pfring.ReceiveOnly); err != nil {
-		return nil, err
-	}
 	if err = ring.Enable(); err != nil {
 		return nil, err
 	}
