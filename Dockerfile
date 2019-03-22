@@ -1,4 +1,5 @@
-FROM ubuntu:16.04
+#FROM ubuntu:16.04
+FROM golang:1.12.1-stretch
 
 RUN apt-get update && \
     apt-get -y -q install wget lsb-release gnupg && \
@@ -9,7 +10,10 @@ RUN apt-get update && \
 RUN apt-get update && \
     apt-get -y install pfring libpcap-dev
 
-COPY packetcapture /packetcapture
+COPY src/packetcapture src/packetcapture
 
-# run with --net=host
-CMD /packetcapture
+RUN go get -u github.com/google/gopacket && go build packetcapture
+
+#COPY packetcapture /packetcapture
+
+#CMD /packetcapture
