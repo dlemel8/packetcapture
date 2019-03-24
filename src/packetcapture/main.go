@@ -38,7 +38,7 @@ func cleanUpOnSigterm(strategy *packetsCaptureStrategy) {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
-		fmt.Printf("got SIGTERM, cleanup and exit...")
+		fmt.Println("got SIGTERM, cleanup and exit...")
 		(*strategy).destroy()
 		os.Exit(1)
 	}()
