@@ -8,48 +8,75 @@ import (
 	"time"
 )
 
-type packetsCaptureStrategy interface {
-	create(device string) (*gopacket.PacketSource, error)
-}
+const maxPacketSize = 65536
 
+type packetsCaptureStrategy interface {
+	create(device string) ([]*gopacket.PacketSource, error)
+	destroy()
+}
 
 type native struct {
-
+	handle *pcap.Handle
 }
 
-func (native) create(device string) (*gopacket.PacketSource, error) {
-	handle, err := pcap.OpenLive(device, 1024, true, 30*time.Second)
+func (n *native) create(device string) ([]*gopacket.PacketSource, error) {
+	var err error
+
+	n.handle, err = pcap.OpenLive(device, maxPacketSize, true, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	//defer handle.Close()
 
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-	return packetSource, nil
+	packetSource := gopacket.NewPacketSource(n.handle, n.handle.LinkType())
+	return []*gopacket.PacketSource{packetSource}, nil
+}
+
+func (n *native) destroy() {
+	n.handle.Close()
 }
 
 type pfRing struct {
-
+	cluster int
+	rings   []*pfring.Ring
 }
 
-func (pfRing) create(device string) (*gopacket.PacketSource, error) {
-	ring, err := pfring.NewRing(device, 65536, pfring.FlagPromisc)
-	if err != nil {
-		return nil, err
+func (p *pfRing) create(device string) ([]*gopacket.PacketSource, error) {
+	var res []*gopacket.PacketSource
+
+	for i := 0; i < 4; i++ {
+		ring, err := pfring.NewRing(device, maxPacketSize, pfring.FlagPromisc)
+		if err != nil {
+			return nil, err
+		}
+		if err = ring.SetDirection(pfring.ReceiveAndTransmit); err != nil {
+			return nil, err
+		}
+		if err = ring.SetSocketMode(pfring.ReadOnly); err != nil {
+			return nil, err
+		}
+		if err = ring.SetCluster(p.cluster, pfring.ClusterPerFlow5Tuple); err != nil {
+			return nil, err
+		}
+		if err = ring.Enable(); err != nil {
+			return nil, err
+		}
+		p.rings = append(p.rings, ring)
+
+		packetSource := gopacket.NewPacketSource(ring, layers.LinkTypeEthernet)
+		res = append(res, packetSource)
 	}
-	if err = ring.SetSocketMode(pfring.ReadOnly); err != nil {
-		return nil, err
-	}
-	if err = ring.Enable(); err != nil {
-		return nil, err
-	}
-	packetSource := gopacket.NewPacketSource(ring, layers.LinkTypeEthernet)
-	return packetSource, nil
+	return res, nil
 }
 
-var strategies = map[string]packetsCaptureStrategy {
-	"pcap": &native{},
-	"pfring": &pfRing{},
+func (p *pfRing) destroy() {
+	for _, ring := range p.rings {
+		ring.Close()
+	}
+}
+
+var strategies = map[string]packetsCaptureStrategy{
+	"pcap":   &native{},
+	"pfring": &pfRing{cluster: 1234},
 }
 
 func getStrategyNames() []string {

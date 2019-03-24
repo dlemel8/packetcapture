@@ -8,12 +8,13 @@ RUN apt-get update && \
     apt-get clean all
 
 RUN apt-get update && \
-    apt-get -y install pfring libpcap-dev
+    apt-get -y install pfring libpcap-dev && \
+    go get -u github.com/google/gopacket
 
 COPY src/packetcapture src/packetcapture
-
-RUN go get -u github.com/google/gopacket && go build packetcapture
+RUN go build packetcapture
 
 #COPY packetcapture /packetcapture
 
 #CMD /packetcapture
+
