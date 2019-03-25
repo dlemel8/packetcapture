@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -15,15 +16,15 @@ import (
 
 var packetsNum uint64
 
-func printPPS() {
+func printStats() {
 	before := atomic.LoadUint64(&packetsNum)
 	time.Sleep(time.Second)
 	after := atomic.LoadUint64(&packetsNum)
-	fmt.Printf("pps: %d\n", after-before)
+	log.Printf("pps: %d, goroutine number: %d\n", after-before, runtime.NumGoroutine())
 }
 
 func processPacket(packet gopacket.Packet) {
-	//fmt.Println(packet)
+	//log.Println(packet)
 }
 
 func capturePackets(source *gopacket.PacketSource) {
@@ -38,8 +39,8 @@ func cleanUpOnSigterm(strategy *packetsCaptureStrategy) {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
-		fmt.Println("got SIGTERM, cleanup and exit...")
-		(*strategy).destroy()
+		log.Println("got SIGTERM, cleanup and exit...")
+		(*strategy).Destroy()
 		os.Exit(1)
 	}()
 }
@@ -54,7 +55,7 @@ func main() {
 	if !ok {
 		log.Fatalf("no such capture method: %s", *method)
 	}
-	packetSources, err := strategy.create(*device)
+	packetSources, err := strategy.Create(*device)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -65,6 +66,6 @@ func main() {
 	}
 
 	for {
-		printPPS()
+		printStats()
 	}
 }

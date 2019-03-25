@@ -5,22 +5,30 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/pfring"
+	"log"
+	"os"
+	"strconv"
 	"time"
 )
 
-const maxPacketSize = 65536
+const (
+	maxPacketSize                = 65536
+	pfringClusterDefaultRingsNum = 4
+)
 
 type packetsCaptureStrategy interface {
-	create(device string) ([]*gopacket.PacketSource, error)
-	destroy()
+	Create(device string) ([]*gopacket.PacketSource, error)
+	Destroy()
 }
 
-type native struct {
+type pcapStrategy struct {
 	handle *pcap.Handle
 }
 
-func (n *native) create(device string) ([]*gopacket.PacketSource, error) {
+func (n *pcapStrategy) Create(device string) ([]*gopacket.PacketSource, error) {
 	var err error
+
+	log.Println("creating pcap handler")
 
 	n.handle, err = pcap.OpenLive(device, maxPacketSize, true, 30*time.Second)
 	if err != nil {
@@ -31,19 +39,21 @@ func (n *native) create(device string) ([]*gopacket.PacketSource, error) {
 	return []*gopacket.PacketSource{packetSource}, nil
 }
 
-func (n *native) destroy() {
+func (n *pcapStrategy) Destroy() {
 	n.handle.Close()
 }
 
-type pfRing struct {
-	cluster int
-	rings   []*pfring.Ring
+type pfringStrategy struct {
+	clusterId int
+	rings     []*pfring.Ring
 }
 
-func (p *pfRing) create(device string) ([]*gopacket.PacketSource, error) {
-	var res []*gopacket.PacketSource
+func (p *pfringStrategy) Create(device string) ([]*gopacket.PacketSource, error) {
+	ringsNum := p.getNumOfRings()
+	log.Printf("creating %d rings\n", ringsNum)
 
-	for i := 0; i < 4; i++ {
+	var res []*gopacket.PacketSource
+	for i := 0; i < ringsNum; i++ {
 		ring, err := pfring.NewRing(device, maxPacketSize, pfring.FlagPromisc)
 		if err != nil {
 			return nil, err
@@ -54,8 +64,10 @@ func (p *pfRing) create(device string) ([]*gopacket.PacketSource, error) {
 		if err = ring.SetSocketMode(pfring.ReadOnly); err != nil {
 			return nil, err
 		}
-		if err = ring.SetCluster(p.cluster, pfring.ClusterPerFlow5Tuple); err != nil {
-			return nil, err
+		if p.clusterId > 0 {
+			if err = ring.SetCluster(p.clusterId, pfring.ClusterPerFlow5Tuple); err != nil {
+				return nil, err
+			}
 		}
 		if err = ring.Enable(); err != nil {
 			return nil, err
@@ -68,15 +80,37 @@ func (p *pfRing) create(device string) ([]*gopacket.PacketSource, error) {
 	return res, nil
 }
 
-func (p *pfRing) destroy() {
+func (p *pfringStrategy) Destroy() {
+	for _, ring := range p.rings {
+		_ = ring.Disable()
+	}
 	for _, ring := range p.rings {
 		ring.Close()
 	}
 }
 
+func (p *pfringStrategy) getNumOfRings() int {
+	if p.clusterId <= 0 {
+		return 1
+	}
+
+	ringsNumStr, ok := os.LookupEnv("PFRING_CLUSTER_RINGS_NUM")
+	if !ok {
+		return pfringClusterDefaultRingsNum
+	}
+
+	ringsNum, err := strconv.Atoi(ringsNumStr)
+	if err != nil {
+		return pfringClusterDefaultRingsNum
+	}
+
+	return ringsNum
+}
+
 var strategies = map[string]packetsCaptureStrategy{
-	"pcap":   &native{},
-	"pfring": &pfRing{cluster: 1234},
+	"pcap":           &pcapStrategy{},
+	"pfring":         &pfringStrategy{},
+	"pfring-cluster": &pfringStrategy{clusterId: 1234},
 }
 
 func getStrategyNames() []string {
