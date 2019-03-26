@@ -8,6 +8,8 @@ RUN apt-get update && \
 
 RUN apt-get update && \
     apt-get -y install pfring libpcap-dev && \
+    go get -u golang.org/x/net/bpf && \
+    go get -u golang.org/x/sys/unix && \
     go get -u github.com/google/gopacket
 
 COPY src/packetcapture src/packetcapture
