@@ -9,18 +9,24 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
 
-var packetsNum uint64
+func printStats(strategy packetsCaptureStrategy) {
+	var receivedBefore uint64 = 0
 
-func printStats() {
-	before := atomic.LoadUint64(&packetsNum)
-	time.Sleep(time.Second)
-	after := atomic.LoadUint64(&packetsNum)
-	log.Printf("pps: %d, goroutine number: %d\n", after-before, runtime.NumGoroutine())
+	for {
+		received, dropped := strategy.PacketStats()
+		pps := received - receivedBefore
+		packetLoss := 0.0
+		if received > 0 || dropped > 0 {
+			packetLoss = float64(dropped) / float64(received+dropped) * 100
+		}
+		log.Printf("pps: %d, packet loss: %2f%%, goroutine number: %d\n", pps, packetLoss, runtime.NumGoroutine())
+		receivedBefore = received
+		time.Sleep(time.Second)
+	}
 }
 
 func processPacket(packet gopacket.Packet) {
@@ -29,18 +35,17 @@ func processPacket(packet gopacket.Packet) {
 
 func capturePackets(source *gopacket.PacketSource) {
 	for packet := range source.Packets() {
-		atomic.AddUint64(&packetsNum, 1)
 		processPacket(packet)
 	}
 }
 
-func cleanUpOnSigterm(strategy *packetsCaptureStrategy) {
+func cleanUpOnSigterm(strategy packetsCaptureStrategy) {
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
 		log.Println("got SIGTERM, cleanup and exit...")
-		(*strategy).Destroy()
+		strategy.Destroy()
 		os.Exit(1)
 	}()
 }
@@ -59,13 +64,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	cleanUpOnSigterm(&strategy)
+	cleanUpOnSigterm(strategy)
 
 	for _, source := range packetSources {
 		go capturePackets(source)
 	}
 
-	for {
-		printStats()
-	}
+	printStats(strategy)
 }

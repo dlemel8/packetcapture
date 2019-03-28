@@ -21,6 +21,7 @@ const (
 type packetsCaptureStrategy interface {
 	Create(device string) ([]*gopacket.PacketSource, error)
 	Destroy()
+	PacketStats() (received uint64, dropped uint64)
 }
 
 type pcapStrategy struct {
@@ -43,6 +44,22 @@ func (n *pcapStrategy) Create(device string) ([]*gopacket.PacketSource, error) {
 
 func (n *pcapStrategy) Destroy() {
 	n.handle.Close()
+}
+
+func (n *pcapStrategy) PacketStats() (received uint64, dropped uint64) {
+	stats, err := n.handle.Stats()
+	if err != nil {
+		return
+	}
+
+	if stats.PacketsReceived > 0 {
+		received += uint64(stats.PacketsReceived)
+	}
+
+	if stats.PacketsDropped > 0 {
+		dropped += uint64(stats.PacketsDropped)
+	}
+	return
 }
 
 type pfringStrategy struct {
@@ -92,6 +109,18 @@ func (p *pfringStrategy) Destroy() {
 	for _, ring := range p.rings {
 		ring.Close()
 	}
+}
+
+func (p *pfringStrategy) PacketStats() (received uint64, dropped uint64) {
+	for _, ring := range p.rings {
+		stats, err := ring.Stats()
+		if err != nil {
+			continue
+		}
+		received += stats.Received
+		dropped += stats.Dropped
+	}
+	return
 }
 
 func getNumOfRings() int {
@@ -148,6 +177,18 @@ func (s *afPacketStrategy) Destroy() {
 	for _, handle := range s.handles {
 		handle.Close()
 	}
+}
+
+func (s *afPacketStrategy) PacketStats() (received uint64, dropped uint64) {
+	for _, handle := range s.handles {
+		_, stats, err := handle.SocketStats()
+		if err != nil {
+			continue
+		}
+		received += uint64(stats.Packets())
+		dropped += uint64(stats.Drops())
+	}
+	return
 }
 
 var strategies = map[string]packetsCaptureStrategy{
