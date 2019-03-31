@@ -51,16 +51,17 @@ func cleanUpOnSigterm(strategy packetsCaptureStrategy) {
 }
 
 func main() {
-	device := flag.String("device", "", "network interface name to capture")
-	method := flag.String("method", "",
-		fmt.Sprintf("capture method to use. options are: %s", strings.Join(getStrategyNames(), ", ")))
+	device := flag.String("d", "", "network interface name to capture")
+	strategyName := flag.String("s", "",
+		fmt.Sprintf("capture strategy to use. options are: %s", strings.Join(getStrategyNames(), ", ")))
+	numberOfRings := flag.Int("n", 1, "number of rings to use in cluster mode (if available)")
 	flag.Parse()
 
-	strategy, ok := strategies[*method]
+	strategy, ok := strategies[*strategyName]
 	if !ok {
-		log.Fatalf("no such capture method: %s", *method)
+		log.Fatalf("no such capture method: %s", *strategyName)
 	}
-	packetSources, err := strategy.Create(*device)
+	packetSources, err := strategy.Create(*device, *numberOfRings)
 	if err != nil {
 		log.Fatal(err)
 	}

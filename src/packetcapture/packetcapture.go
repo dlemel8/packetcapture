@@ -7,19 +7,16 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/pfring"
 	"log"
-	"os"
-	"strconv"
 	"time"
 )
 
 const (
-	maxPacketSize             = 65536
-	clusterDefaultRingsNum    = 4
-	clusterRingsNumEnvVarName = "CLUSTER_RINGS_NUM"
+	maxPacketSizeInBytes = 1 << 16
+	clusterId            = 1234
 )
 
 type packetsCaptureStrategy interface {
-	Create(device string) ([]*gopacket.PacketSource, error)
+	Create(device string, numberOfRings int) ([]*gopacket.PacketSource, error)
 	Destroy()
 	PacketStats() (received uint64, dropped uint64)
 }
@@ -28,12 +25,13 @@ type pcapStrategy struct {
 	handle *pcap.Handle
 }
 
-func (n *pcapStrategy) Create(device string) ([]*gopacket.PacketSource, error) {
+func (n *pcapStrategy) Create(device string, numberOfRings int) ([]*gopacket.PacketSource, error) {
+	if numberOfRings > 1 {
+		log.Println("WARNING: pcap not support cluster mode, ignoring number of rings parameter")
+	}
+
 	var err error
-
-	log.Println("creating pcap handler")
-
-	n.handle, err = pcap.OpenLive(device, maxPacketSize, true, 30*time.Second)
+	n.handle, err = pcap.OpenLive(device, maxPacketSizeInBytes, true, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -63,20 +61,13 @@ func (n *pcapStrategy) PacketStats() (received uint64, dropped uint64) {
 }
 
 type pfringStrategy struct {
-	clusterId int
-	rings     []*pfring.Ring
+	rings []*pfring.Ring
 }
 
-func (p *pfringStrategy) Create(device string) ([]*gopacket.PacketSource, error) {
-	ringsNum := 1
-	if p.clusterId > 0 {
-		ringsNum = getNumOfRings()
-	}
-	log.Printf("creating %d rings\n", ringsNum)
-
+func (p *pfringStrategy) Create(device string, numberOfRings int) ([]*gopacket.PacketSource, error) {
 	var res []*gopacket.PacketSource
-	for i := 0; i < ringsNum; i++ {
-		ring, err := pfring.NewRing(device, maxPacketSize, pfring.FlagPromisc)
+	for i := 0; i < numberOfRings; i++ {
+		ring, err := pfring.NewRing(device, maxPacketSizeInBytes, pfring.FlagPromisc)
 		if err != nil {
 			return nil, err
 		}
@@ -86,8 +77,8 @@ func (p *pfringStrategy) Create(device string) ([]*gopacket.PacketSource, error)
 		if err = ring.SetSocketMode(pfring.ReadOnly); err != nil {
 			return nil, err
 		}
-		if p.clusterId > 0 {
-			if err = ring.SetCluster(p.clusterId, pfring.ClusterPerFlow5Tuple); err != nil {
+		if numberOfRings > 1 {
+			if err = ring.SetCluster(clusterId, pfring.ClusterPerFlow5Tuple); err != nil {
 				return nil, err
 			}
 		}
@@ -123,44 +114,23 @@ func (p *pfringStrategy) PacketStats() (received uint64, dropped uint64) {
 	return
 }
 
-func getNumOfRings() int {
-	ringsNumStr, ok := os.LookupEnv(clusterRingsNumEnvVarName)
-	if !ok {
-		return clusterDefaultRingsNum
-	}
-
-	ringsNum, err := strconv.Atoi(ringsNumStr)
-	if err != nil {
-		return clusterDefaultRingsNum
-	}
-
-	return ringsNum
-}
-
 type afPacketStrategy struct {
-	clusterId int
-	handles   []*afpacket.TPacket
+	handles []*afpacket.TPacket
 }
 
-func (s *afPacketStrategy) Create(device string) ([]*gopacket.PacketSource, error) {
-	ringsNum := 1
-	if s.clusterId > 0 {
-		ringsNum = getNumOfRings()
-	}
-	log.Printf("creating %d rings\n", ringsNum)
-
+func (s *afPacketStrategy) Create(device string, numberOfRings int) ([]*gopacket.PacketSource, error) {
 	var res []*gopacket.PacketSource
-	for i := 0; i < ringsNum; i++ {
+	for i := 0; i < numberOfRings; i++ {
 		handle, err := afpacket.NewTPacket(
 			afpacket.OptInterface(device),
-			afpacket.OptFrameSize(maxPacketSize),
+			afpacket.OptFrameSize(maxPacketSizeInBytes),
 			afpacket.OptTPacketVersion(afpacket.TPacketVersion3),
 		)
 		if err != nil {
 			return nil, err
 		}
-		if s.clusterId > 0 {
-			if err = handle.SetFanout(afpacket.FanoutHash, uint16(s.clusterId)); err != nil {
+		if numberOfRings > 1 {
+			if err = handle.SetFanout(afpacket.FanoutHash, uint16(clusterId)); err != nil {
 				return nil, err
 			}
 		}
@@ -192,11 +162,9 @@ func (s *afPacketStrategy) PacketStats() (received uint64, dropped uint64) {
 }
 
 var strategies = map[string]packetsCaptureStrategy{
-	"pcap":            &pcapStrategy{},
-	"pfring":          &pfringStrategy{},
-	"pfring-cluster":  &pfringStrategy{clusterId: 1234},
-	"afpacket":        &afPacketStrategy{},
-	"afpacket-fanout": &afPacketStrategy{clusterId: 1234},
+	"pcap":     &pcapStrategy{},
+	"pfring":   &pfringStrategy{},
+	"afpacket": &afPacketStrategy{},
 }
 
 func getStrategyNames() []string {
