@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"log"
 	"os"
 	"os/signal"
@@ -33,8 +34,24 @@ func processPacket(packet gopacket.Packet) {
 	//log.Println(packet)
 }
 
-func capturePackets(source *gopacket.PacketSource) {
-	for packet := range source.Packets() {
+func capturePackets(source gopacket.PacketDataSource) {
+	packetSource := gopacket.NewPacketSource(source, layers.LinkTypeEthernet)
+	packetSource.DecodeOptions = gopacket.NoCopy
+	for packet := range packetSource.Packets() {
+		processPacket(packet)
+	}
+}
+
+func capturePacketsZeroCopy(source gopacket.ZeroCopyPacketDataSource) {
+	for {
+		data, ci, err := source.ZeroCopyReadPacketData()
+		if err != nil {
+			continue
+		}
+		packet := gopacket.NewPacket(data, layers.LinkTypeEthernet, gopacket.NoCopy)
+		m := packet.Metadata()
+		m.CaptureInfo = ci
+		m.Truncated = m.Truncated || ci.CaptureLength < ci.Length
 		processPacket(packet)
 	}
 }
@@ -55,20 +72,26 @@ func main() {
 	strategyName := flag.String("s", "",
 		fmt.Sprintf("capture strategy to use. options are: %s", strings.Join(getStrategyNames(), ", ")))
 	numberOfRings := flag.Int("n", 1, "number of rings to use in cluster mode (if available)")
+	zeroCopy := flag.Bool("zc", false, "don't copy packet to user space to process it")
 	flag.Parse()
 
 	strategy, ok := strategies[*strategyName]
 	if !ok {
 		log.Fatalf("no such capture method: %s", *strategyName)
 	}
-	packetSources, err := strategy.Create(*device, *numberOfRings)
+	packetDataSources, err := strategy.Create(*device, *numberOfRings)
 	if err != nil {
 		log.Fatal(err)
 	}
 	cleanUpOnSigterm(strategy)
 
-	for _, source := range packetSources {
-		go capturePackets(source)
+	for _, source := range packetDataSources {
+		if *zeroCopy {
+			go capturePacketsZeroCopy(source)
+		} else {
+			go capturePackets(source)
+		}
+
 	}
 
 	printStats(strategy)

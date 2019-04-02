@@ -3,7 +3,6 @@ package main
 import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/afpacket"
-	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/pfring"
 	"log"
@@ -15,8 +14,13 @@ const (
 	clusterId            = 1234
 )
 
+type PacketDataSource interface {
+	gopacket.PacketDataSource
+	gopacket.ZeroCopyPacketDataSource
+}
+
 type packetsCaptureStrategy interface {
-	Create(device string, numberOfRings int) ([]*gopacket.PacketSource, error)
+	Create(device string, numberOfRings int) ([]PacketDataSource, error)
 	Destroy()
 	PacketStats() (received uint64, dropped uint64)
 }
@@ -25,7 +29,7 @@ type pcapStrategy struct {
 	handle *pcap.Handle
 }
 
-func (n *pcapStrategy) Create(device string, numberOfRings int) ([]*gopacket.PacketSource, error) {
+func (n *pcapStrategy) Create(device string, numberOfRings int) ([]PacketDataSource, error) {
 	if numberOfRings > 1 {
 		log.Println("WARNING: pcap not support cluster mode, ignoring number of rings parameter")
 	}
@@ -36,8 +40,7 @@ func (n *pcapStrategy) Create(device string, numberOfRings int) ([]*gopacket.Pac
 		return nil, err
 	}
 
-	packetSource := gopacket.NewPacketSource(n.handle, n.handle.LinkType())
-	return []*gopacket.PacketSource{packetSource}, nil
+	return []PacketDataSource{n.handle}, nil
 }
 
 func (n *pcapStrategy) Destroy() {
@@ -64,8 +67,8 @@ type pfringStrategy struct {
 	rings []*pfring.Ring
 }
 
-func (p *pfringStrategy) Create(device string, numberOfRings int) ([]*gopacket.PacketSource, error) {
-	var res []*gopacket.PacketSource
+func (p *pfringStrategy) Create(device string, numberOfRings int) ([]PacketDataSource, error) {
+	var res []PacketDataSource
 	for i := 0; i < numberOfRings; i++ {
 		ring, err := pfring.NewRing(device, maxPacketSizeInBytes, pfring.FlagPromisc)
 		if err != nil {
@@ -86,9 +89,7 @@ func (p *pfringStrategy) Create(device string, numberOfRings int) ([]*gopacket.P
 			return nil, err
 		}
 		p.rings = append(p.rings, ring)
-
-		packetSource := gopacket.NewPacketSource(ring, layers.LinkTypeEthernet)
-		res = append(res, packetSource)
+		res = append(res, ring)
 	}
 	return res, nil
 }
@@ -118,8 +119,8 @@ type afPacketStrategy struct {
 	handles []*afpacket.TPacket
 }
 
-func (s *afPacketStrategy) Create(device string, numberOfRings int) ([]*gopacket.PacketSource, error) {
-	var res []*gopacket.PacketSource
+func (s *afPacketStrategy) Create(device string, numberOfRings int) ([]PacketDataSource, error) {
+	var res []PacketDataSource
 	for i := 0; i < numberOfRings; i++ {
 		handle, err := afpacket.NewTPacket(
 			afpacket.OptInterface(device),
@@ -135,9 +136,7 @@ func (s *afPacketStrategy) Create(device string, numberOfRings int) ([]*gopacket
 			}
 		}
 		s.handles = append(s.handles, handle)
-
-		packetSource := gopacket.NewPacketSource(handle, layers.LinkTypeEthernet)
-		res = append(res, packetSource)
+		res = append(res, handle)
 	}
 
 	return res, nil
