@@ -3,8 +3,10 @@ package main
 import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/afpacket"
+	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/pfring"
+	"golang.org/x/net/bpf"
 	"log"
 	"time"
 )
@@ -20,7 +22,7 @@ type PacketDataSource interface {
 }
 
 type packetsCaptureStrategy interface {
-	Create(device string, numberOfRings int) ([]PacketDataSource, error)
+	Create(device string, numberOfRings int, bpfFilter string) ([]PacketDataSource, error)
 	Destroy()
 	PacketStats() (received uint64, dropped uint64)
 }
@@ -29,7 +31,7 @@ type pcapStrategy struct {
 	handle *pcap.Handle
 }
 
-func (n *pcapStrategy) Create(device string, numberOfRings int) ([]PacketDataSource, error) {
+func (n *pcapStrategy) Create(device string, numberOfRings int, bpfFilter string) ([]PacketDataSource, error) {
 	if numberOfRings > 1 {
 		log.Println("WARNING: pcap not support cluster mode, ignoring number of rings parameter")
 	}
@@ -38,6 +40,11 @@ func (n *pcapStrategy) Create(device string, numberOfRings int) ([]PacketDataSou
 	n.handle, err = pcap.OpenLive(device, maxPacketSizeInBytes, true, 30*time.Second)
 	if err != nil {
 		return nil, err
+	}
+	if len(bpfFilter) != 0 {
+		if err = n.handle.SetBPFFilter(bpfFilter); err != nil {
+			return nil, err
+		}
 	}
 
 	return []PacketDataSource{n.handle}, nil
@@ -67,7 +74,7 @@ type pfringStrategy struct {
 	rings []*pfring.Ring
 }
 
-func (p *pfringStrategy) Create(device string, numberOfRings int) ([]PacketDataSource, error) {
+func (p *pfringStrategy) Create(device string, numberOfRings int, bpfFilter string) ([]PacketDataSource, error) {
 	var res []PacketDataSource
 	for i := 0; i < numberOfRings; i++ {
 		ring, err := pfring.NewRing(device, maxPacketSizeInBytes, pfring.FlagPromisc)
@@ -85,9 +92,15 @@ func (p *pfringStrategy) Create(device string, numberOfRings int) ([]PacketDataS
 				return nil, err
 			}
 		}
+		if len(bpfFilter) != 0 {
+			if err = ring.SetBPFFilter(bpfFilter); err != nil {
+				return nil, err
+			}
+		}
 		if err = ring.Enable(); err != nil {
 			return nil, err
 		}
+
 		p.rings = append(p.rings, ring)
 		res = append(res, ring)
 	}
@@ -119,7 +132,16 @@ type afPacketStrategy struct {
 	handles []*afpacket.TPacket
 }
 
-func (s *afPacketStrategy) Create(device string, numberOfRings int) ([]PacketDataSource, error) {
+func (s *afPacketStrategy) Create(device string, numberOfRings int, bpfFilter string) ([]PacketDataSource, error) {
+	var err error
+	var compiledBpf []bpf.RawInstruction
+	if len(bpfFilter) != 0 {
+		compiledBpf, err = s.compileBpf(bpfFilter)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	var res []PacketDataSource
 	for i := 0; i < numberOfRings; i++ {
 		handle, err := afpacket.NewTPacket(
@@ -135,6 +157,12 @@ func (s *afPacketStrategy) Create(device string, numberOfRings int) ([]PacketDat
 				return nil, err
 			}
 		}
+		if len(bpfFilter) != 0 {
+			if err = handle.SetBPF(compiledBpf); err != nil {
+				return nil, err
+			}
+		}
+
 		s.handles = append(s.handles, handle)
 		res = append(res, handle)
 	}
@@ -158,6 +186,23 @@ func (s *afPacketStrategy) PacketStats() (received uint64, dropped uint64) {
 		dropped += uint64(stats.Drops())
 	}
 	return
+}
+
+func (s *afPacketStrategy) compileBpf(bpfFilter string) ([]bpf.RawInstruction, error) {
+	instructions, err := pcap.CompileBPFFilter(layers.LinkTypeEthernet, maxPacketSizeInBytes, bpfFilter)
+	if err != nil {
+		return nil, err
+	}
+	var res []bpf.RawInstruction
+	for _, i := range instructions {
+		res = append(res, bpf.RawInstruction{
+			Op: i.Code,
+			Jt: i.Jt,
+			Jf: i.Jf,
+			K:  i.K,
+		})
+	}
+	return res, nil
 }
 
 var strategies = map[string]packetsCaptureStrategy{

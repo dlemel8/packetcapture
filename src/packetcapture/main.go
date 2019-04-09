@@ -31,14 +31,22 @@ func printStats(strategy packetsCaptureStrategy) {
 }
 
 func processPacket(packet gopacket.Packet) {
-	//log.Println(packet)
+	//if eth := packet.LinkLayer(); eth != nil {
+	//	srcMac := eth.LinkFlow().Src()
+	//}
+	//if ip := packet.NetworkLayer(); ip != nil {
+	//	srcIp, dstIp := ip.NetworkFlow().Endpoints()
+	//}
+	//if trans := packet.TransportLayer(); trans != nil {
+	//	srcPort, dstPort := trans.TransportFlow().Endpoints()
+	//}
 }
 
 func capturePackets(source gopacket.PacketDataSource) {
 	packetSource := gopacket.NewPacketSource(source, layers.LinkTypeEthernet)
 	packetSource.DecodeOptions = gopacket.NoCopy
 	for packet := range packetSource.Packets() {
-		processPacket(packet)
+		go processPacket(packet)
 	}
 }
 
@@ -71,15 +79,17 @@ func main() {
 	device := flag.String("d", "", "network interface name to capture")
 	strategyName := flag.String("s", "",
 		fmt.Sprintf("capture strategy to use. options are: %s", strings.Join(getStrategyNames(), ", ")))
-	numberOfRings := flag.Int("n", 1, "number of rings to use in cluster mode (if available)")
-	zeroCopy := flag.Bool("zc", false, "don't copy packet to user space to process it")
+	numberOfRings := flag.Int("n", 1, "number of rings to use in cluster mode, if available")
+	zeroCopy := flag.Bool("zc", false, "don't copy packet to user space to process it (default false)")
+	bpfFilter := flag.String("f", "", "bpf filter (optional)")
 	flag.Parse()
 
 	strategy, ok := strategies[*strategyName]
 	if !ok {
-		log.Fatalf("no such capture method: %s", *strategyName)
+		flag.Usage()
+		os.Exit(1)
 	}
-	packetDataSources, err := strategy.Create(*device, *numberOfRings)
+	packetDataSources, err := strategy.Create(*device, *numberOfRings, *bpfFilter)
 	if err != nil {
 		log.Fatal(err)
 	}
