@@ -14,19 +14,24 @@ import (
 	"time"
 )
 
-func printStats(strategy packetsCaptureStrategy) {
+func printStats(strategy packetsCaptureStrategy, exit <-chan bool) {
 	var receivedBefore uint64 = 0
 
 	for {
-		received, dropped := strategy.PacketStats()
-		pps := received - receivedBefore
-		packetLoss := 0.0
-		if received > 0 || dropped > 0 {
-			packetLoss = float64(dropped) / float64(received+dropped) * 100
+		select {
+		case <-exit:
+			return
+		default:
+			received, dropped := strategy.PacketStats()
+			pps := received - receivedBefore
+			packetLoss := 0.0
+			if received > 0 || dropped > 0 {
+				packetLoss = float64(dropped) / float64(received+dropped) * 100
+			}
+			log.Printf("pps: %d, packet loss: %2f%%, goroutine number: %d\n", pps, packetLoss, runtime.NumGoroutine())
+			receivedBefore = received
+			time.Sleep(time.Second)
 		}
-		log.Printf("pps: %d, packet loss: %2f%%, goroutine number: %d\n", pps, packetLoss, runtime.NumGoroutine())
-		receivedBefore = received
-		time.Sleep(time.Second)
 	}
 }
 
@@ -42,37 +47,41 @@ func processPacket(packet gopacket.Packet) {
 	//}
 }
 
-func capturePackets(source gopacket.PacketDataSource) {
+func capturePackets(source gopacket.PacketDataSource, exit <-chan bool) {
 	packetSource := gopacket.NewPacketSource(source, layers.LinkTypeEthernet)
 	packetSource.DecodeOptions = gopacket.NoCopy
-	for packet := range packetSource.Packets() {
-		go processPacket(packet)
-	}
-}
 
-func capturePacketsZeroCopy(source gopacket.ZeroCopyPacketDataSource) {
 	for {
-		data, ci, err := source.ZeroCopyReadPacketData()
-		if err != nil {
-			continue
+		select {
+		case <-exit:
+			return
+		default:
+			packet, err := packetSource.NextPacket()
+			if err != nil {
+				continue
+			}
+			go processPacket(packet)
 		}
-		packet := gopacket.NewPacket(data, layers.LinkTypeEthernet, gopacket.NoCopy)
-		m := packet.Metadata()
-		m.CaptureInfo = ci
-		m.Truncated = m.Truncated || ci.CaptureLength < ci.Length
-		processPacket(packet)
 	}
 }
 
-func cleanUpOnSigterm(strategy packetsCaptureStrategy) {
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-c
-		log.Println("got SIGTERM, cleanup and exit...")
-		strategy.Destroy()
-		os.Exit(1)
-	}()
+func capturePacketsZeroCopy(source gopacket.ZeroCopyPacketDataSource, exit <-chan bool) {
+	for {
+		select {
+		case <-exit:
+			return
+		default:
+			data, ci, err := source.ZeroCopyReadPacketData()
+			if err != nil {
+				continue
+			}
+			packet := gopacket.NewPacket(data, layers.LinkTypeEthernet, gopacket.NoCopy)
+			m := packet.Metadata()
+			m.CaptureInfo = ci
+			m.Truncated = m.Truncated || ci.CaptureLength < ci.Length
+			processPacket(packet)
+		}
+	}
 }
 
 func main() {
@@ -93,16 +102,24 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	cleanUpOnSigterm(strategy)
+	defer strategy.Destroy()
 
+	exitCh := make(chan bool)
 	for _, source := range packetDataSources {
 		if *zeroCopy {
-			go capturePacketsZeroCopy(source)
+			go capturePacketsZeroCopy(source, exitCh)
 		} else {
-			go capturePackets(source)
+			go capturePackets(source, exitCh)
 		}
 
 	}
+	go printStats(strategy, exitCh)
+	defer close(exitCh) // notify all goroutines at once
 
-	printStats(strategy)
+	signalCh := make(chan os.Signal)
+	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
+	<-signalCh
+	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	signal.Stop(signalCh)
+	log.Println("got signal, cleanup and exit...")
 }
