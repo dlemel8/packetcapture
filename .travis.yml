@@ -1,6 +1,7 @@
-    
+language: go
+
 services:
   - docker
 
 script:
-  - docker build
+  - docker build .
